@@ -1,0 +1,5 @@
+black
+doc8
+pycodestyle
+pytest
+tox
