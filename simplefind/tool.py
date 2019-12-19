@@ -3,6 +3,7 @@ import fnmatch
 import os
 import re
 import shlex
+import sys
 
 import click
 
@@ -30,6 +31,12 @@ WILDCARDS = re.compile(r"[\[\*\?]")
     help="Directory to search. Default = current directory. Can be given multiple times.",
 )
 @click.option(
+    "--dotdirs/--no-dotdirs",
+    "dotdirs",
+    default=False,
+    help="Also descend into dot directories like .git (skipped be default)",
+)
+@click.option(
     "--escape/--no-escape",
     "-e/-E",
     "escape",
@@ -53,16 +60,27 @@ WILDCARDS = re.compile(r"[\[\*\?]")
     help="(default) Output each file name on a separate line",
 )
 @click.option("--case-sensitive/--case-insensitive", "-c/-i", "use_case", default=False)
-@click.argument("frag", nargs=-1, required=True)
-def find(any_logic, directory, sep, escape, use_case, frag):
+@click.argument("frag", nargs=-1)
+def find(
+    any_logic=True,
+    directory=["."],
+    dotdirs=False,
+    sep="\n",
+    escape=True,
+    use_case=False,
+    frag=[],
+):
     # Which logic type to use?
-    comp = any
+    collect = any
     if not any_logic:
-        comp = all
+        collect = all
 
-    # Whether to shell-escape the output
+    # Whether to shell-escape the output. We only apply shell escapes when
+    # writing to a terminal, as escapes will not be interpreted by the shell
+    # when piping output, and we don't want to write escaped versions when
+    # redirecting to files.
     esc = lambda x: x
-    if escape:
+    if escape and sys.stdout.isatty():
         esc = shlex.quote
 
     # Build the shell patterns to match against
@@ -75,19 +93,33 @@ def find(any_logic, directory, sep, escape, use_case, frag):
         else:  # assume substring, add wildcards
             patterns.add(f"*{fragment}*")
 
+    # If no pattern provided, mimic find and match all
+    if not patterns:
+        patterns.add("*")
+
     # search for files that match patterns
     the_matches = set()
-    for dir in directory:
-        for dirpath, dirnames, files in os.walk(dir):
+    for adir in directory:
+        for dirpath, dirnames, files in os.walk(adir):
+            # Remove dotdirs like .git or .tox
+            if not dotdirs:
+                # Important to cast to list. Cannot modify dirnames while iterating.
+                # donotdescend must therefore be a new list, not an iterator.
+                donotdescend = list(filter(lambda x: x.startswith("."), dirnames))
+                for d in donotdescend:
+                    # dirnames is passed by ref, must be modified in place to
+                    # affect walk
+                    dirnames.remove(d)
+
             for fname in files:
                 comp_name = fname
                 if not use_case:
                     comp_name = fname.lower()
-                if comp(fnmatch.fnmatch(comp_name, pat) for pat in patterns):
+                if collect(fnmatch.fnmatch(comp_name, pat) for pat in patterns):
                     the_matches.add(os.path.join(dirpath, fname))
 
     # output in the requested format
-    output = sep.join(esc(f) for f in the_matches)
+    output = sep.join(esc(f) for f in sorted(the_matches))
     print(output)
 
 
